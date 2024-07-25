@@ -215,7 +215,7 @@ def drawWaveforms(screen):
     if listening:
         age = (time.time()-listening_timestamp)*config['CHUNK_RATE']
 
-    y_offset = -70
+    y_offset = -100
     
     x_offset = min(0,940-len(sound_chunks))
     for i in range(len(sound_chunks)):
@@ -224,11 +224,11 @@ def drawWaveforms(screen):
         audio_array = np.frombuffer(chunk, dtype=np.int16)
         audio_array.reshape((882))
         h = np.amax(np.abs(audio_array))*0.07
-        h = 50 * (log(h, 10) + 1)
+        h = 10 * (log(h, 2) + 1)
         
 
         if k < len(keyframes) and i >= keyframes[k]:
-            pg.draw.rect(screen, (128,128,128), pg.Rect(i+x_offset, 0, 1, 600))
+            pg.draw.rect(screen, (200,200,200), pg.Rect(i+x_offset, 0, 1, 600))
             k += 1
 
         if k >= len(keyframes):
@@ -265,7 +265,7 @@ def drawTranscriptSnippets(screen):
         text_surface = small_font.render(stri, True, (0, 0, 0))
         screen.blit(text_surface, (40 + x_offset,480+y*24 + y_offset))
         
-    drawText(screen, transcript_list[len(keyframes) - 1], 'black', (10, 300, 520, 1000), my_font)
+    drawText(screen, transcript_list[len(keyframes) - 1], 'black', (10, 220, 545, 1000), my_font)
 
     infos = [["Left: reject snippet", "Down: listen to snippet", "Right: approve snippet"],["Enter: Instantly save (at the end)", "Left-left: Delete previous snippet","Left-down: Listen to previous snippet"],["Writing to "+destination,"",""]]
     xs = [20,280,650]
