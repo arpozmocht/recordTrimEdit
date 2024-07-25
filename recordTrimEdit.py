@@ -13,6 +13,9 @@ from pygame._sdl2 import (
 )
 import pygame_widgets
 from pygame_widgets.dropdown import Dropdown
+from functools import reduce
+from operator import concat
+from math import log
 
 # Default parameters
 config_filename = "config.json"
@@ -21,6 +24,44 @@ default_sample_rate = 44100
 default_margin = 0.25
 default_threshold = 200
 default_mic_index = 0
+
+def drawText(surface, text, color, rect, font, aa=True, bkg=None):
+    rect = pg.Rect(rect)
+    y = rect.top
+    lineSpacing = -2
+
+    # get the height of the font
+    fontHeight = font.size("Tg")[1]
+
+    while text:
+        i = 1
+
+        # determine if the row of text will be outside our area
+        if y + fontHeight > rect.bottom:
+            break
+
+        # determine maximum width of line
+        while font.size(text[:i])[0] < rect.width and i < len(text):
+            i += 1
+
+        # if we've wrapped the text, then adjust the wrap to the last word      
+        if i < len(text): 
+            i = text.rfind(" ", 0, i) + 1
+
+        # render the line and blit it to the surface
+        if bkg:
+            image = font.render(text[:i], 1, color, bkg)
+            image.set_colorkey(bkg)
+        else:
+            image = font.render(text[:i], aa, color)
+
+        surface.blit(image, (rect.left, y))
+        y += fontHeight + lineSpacing
+
+        # remove the text we just blitted
+        text = text[i:]
+
+    return text
 
 def read_config():
     try:
@@ -50,7 +91,7 @@ def update_config(kwargs):
         json.dump(config, f, indent=4)
 
 m = int(config['MARGIN']*config['CHUNK_RATE'])
-keys = [pg.K_LEFT, pg.K_DOWN, pg.K_RIGHT, pg.K_RETURN]
+keys = [pg.K_LEFT, pg.K_DOWN, pg.K_RIGHT, pg.K_RETURN, pg.K_RSHIFT, pg.K_UP]
 
 # reject, listen, approve, instant save .wav file
 listening = False
@@ -65,11 +106,10 @@ def callback(audiodevice, audiomemoryview):
     if not listening:
         sound_chunks.append(bytes(audiomemoryview))
 
-transcript = []
 if len(sys.argv) >= 2:
     filename = sys.argv[1]
     f = open(filename,"r+",encoding="utf-8")
-    transcript = f.read().split("\n")
+    transcript = [{'line': line, 'repeats': 2} for line in f.read().split("\n")]
     f.close()
 else:
     print("No transcript file given.")
@@ -78,6 +118,9 @@ else:
 destination = "output.wav"
 if len(sys.argv) >= 3:
     destination = sys.argv[2]
+    
+def depict_transcript_as_list():
+    return reduce(concat, [[line_info['line']] * line_info['repeats'] for line_info in transcript])
 
 
 pg.mixer.pre_init(config['SAMPLE_RATE'], 32, 1, config['SAMPLE_RATE']//config['CHUNK_RATE'])
@@ -99,9 +142,26 @@ audio = AudioDevice(
     numchannels=1,
     chunksize=config['SAMPLE_RATE']//config['CHUNK_RATE'],
 
-    allowed_changes=AUDIO_ALLOW_FORMAT_CHANGE,
+    allowed_changes=0,
     callback=callback,
 )
+
+selected = {'line_num': 0, 'repeat': 0}
+
+def advance_selection():    
+    selected['repeat'] += 1
+    
+    if selected['repeat'] >= transcript[selected['line_num']]['repeats']:
+        selected['line_num'] += 1
+        selected['repeat'] = 0
+        
+def revert_selection():
+    selected['repeat'] -= 1
+    
+    if selected['repeat'] < 0:
+        selected['line_num'] -= 1
+        selected['repeat'] = transcript[selected['line_num']]['repeats']
+    
 
 # start recording.
 keyframes = [0]
@@ -148,12 +208,15 @@ def drawBackground(screen):
     screen.fill((255, 255, 255))
 
 def drawWaveforms(screen):
+    # print(len(sound_chunks))
     k = 0
     start_pointer, end_pointer = getEdges()
 
     if listening:
         age = (time.time()-listening_timestamp)*config['CHUNK_RATE']
 
+    y_offset = -70
+    
     x_offset = min(0,940-len(sound_chunks))
     for i in range(len(sound_chunks)):
         chunk = sound_chunks[i]
@@ -161,6 +224,8 @@ def drawWaveforms(screen):
         audio_array = np.frombuffer(chunk, dtype=np.int16)
         audio_array.reshape((882))
         h = np.amax(np.abs(audio_array))*0.07
+        h = 50 * (log(h, 10) + 1)
+        
 
         if k < len(keyframes) and i >= keyframes[k]:
             pg.draw.rect(screen, (128,128,128), pg.Rect(i+x_offset, 0, 1, 600))
@@ -182,14 +247,40 @@ def drawWaveforms(screen):
             else:
                 COLOR = [170,170,0]
 
-        pg.draw.rect(screen, COLOR, pg.Rect(i+x_offset, 260-h/2, 1, h))
+        pg.draw.rect(screen, COLOR, pg.Rect(i+x_offset, 260-h/2 + y_offset, 1, h))
 
-def drawTranscript(screen):
+def drawTranscriptSnippets(screen):
+    x_offset = 550
+    y_offset = -130
+    
+    transcript_list = depict_transcript_as_list()
+    for y in range(-2,15):
+        stri = "-"
+        line = y+len(keyframes)-1
+        if line >= 0 and line < len(transcript_list):
+            stri = transcript_list[line]
+
+        if y == 0:
+            pg.draw.rect(screen, (255,255,0), pg.Rect(20 + x_offset,480 + y_offset,1000,24))
+        text_surface = small_font.render(stri, True, (0, 0, 0))
+        screen.blit(text_surface, (40 + x_offset,480+y*24 + y_offset))
+        
+    drawText(screen, transcript_list[len(keyframes) - 1], 'black', (10, 300, 520, 1000), my_font)
+
+    infos = [["Left: reject snippet", "Down: listen to snippet", "Right: approve snippet"],["Enter: Instantly save (at the end)", "Left-left: Delete previous snippet","Left-down: Listen to previous snippet"],["Writing to "+destination,"",""]]
+    xs = [20,280,650]
+    for i in range(len(infos)):
+        for j in range(len(infos[i])):
+            text_surface = small_font.render(infos[i][j], True, (0, 0, 0))
+            screen.blit(text_surface, (xs[i],12+22*j))
+            
+def drawTranscriptCurrent(screen):
+    transcript_list = depict_transcript_as_list()
     for y in range(-2,3):
         stri = "-"
         line = y+len(keyframes)-1
-        if line >= 0 and line < len(transcript):
-            stri = transcript[line]
+        if line >= 0 and line < len(transcript_list):
+            stri = transcript_list[line]
 
         if y == 0:
             pg.draw.rect(screen, (255,255,0), pg.Rect(20,480,1000,30))
@@ -217,6 +308,18 @@ small_font = pg.font.SysFont('Arial', 20)
 sound = None
 # Run until the user asks to quit
 running = True
+
+def approve_audio():
+    stopListening()
+    removeSilentEnds()
+    keyframes.append(int(len(sound_chunks)))
+    advance_selection()
+    print(selected)
+    if len(keyframes) >= len(depict_transcript_as_list()) + 1:
+        running = False
+                    
+def duplicate_line():
+    transcript[selected['line_num']]['repeats'] += 1
 
 def update_audio_device(*args):
     global dropdown
@@ -267,11 +370,13 @@ while running:
                 stopListening()
                 if len(keyframes) >= 2 and keyframes[-1] >= len(sound_chunks)-m:
                     keyframes.pop()
+                    revert_selection()
                 sound_chunks = sound_chunks[0:keyframes[-1]]
 
             if event.key == keys[1]: # listen to audio
                 if len(keyframes) >= 2 and keyframes[-1] >= len(sound_chunks)-m:
                     keyframes.pop()
+                    revert_selection()
                 listening_edges = getEdges()
                 if listening_edges[1] > listening_edges[0]:
                     listening = True
@@ -287,21 +392,26 @@ while running:
                     sound.set_volume(1.0)
 
             if event.key == keys[2]: # approve audio
-                stopListening()
-                removeSilentEnds()
-                keyframes.append(int(len(sound_chunks)))
-                if len(keyframes) >= len(transcript):
-                    running = False
+                approve_audio()
 
             if event.key == keys[3]: # instant save
                 listening = False
                 removeSilentEnds()
                 running = False
+                
+            if event.key == keys[4]: # add line
+                # print(selected)
+                duplicate_line()
+                
+            if event.key == keys[5]:
+                print('fo gish')
+                duplicate_line()
+                approve_audio()
 
     # Fill the background with white
     drawBackground(screen)
     drawWaveforms(screen)
-    drawTranscript(screen)
+    drawTranscriptSnippets(screen)
     dropdown.draw()
     update_audio_device()
 
